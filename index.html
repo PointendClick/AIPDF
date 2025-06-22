@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI PDF Editor</title>
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Custom CSS for font-family and spinner -->
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .animate-spin {
+            animation: spin 1s linear infinite;
+        }
+    </style>
+
+    <!-- React CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <!-- React DOM CDN -->
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Babel Standalone for JSX transformation in the browser -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- PDF.js CDN (Core Library) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <!-- PDF.js Worker CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
+
+    <!-- PDF-lib CDN -->
+    <script src="https://unpkg.com/pdf-lib/dist/pdf-lib.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 flex items-center justify-center min-h-screen p-4">
+    <div id="root" class="w-full max-w-4xl bg-white rounded-xl shadow-2xl overflow-hidden"></div>
+
+    <script type="text/babel">
+        // Destructure React hooks and PDF-lib modules for easier use
+        const { useState, useRef, useEffect } = React;
+        const { PDFDocument, rgb } = PDFLib;
+
+        // Set the worker source for PDF.js globally. This is crucial for PDF.js to
+        // load and parse PDFs correctly in a web worker.
+        if (pdfjsLib && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+        }
+
+        // Main App Component for the PDF Page Remover
+        function App() {
+            // State variables to manage the application's data and UI
+            const [originalPdfFile, setOriginalPdfFile] = useState(null); // Stores the initially uploaded PDF file object
+            const [processedPdfBlob, setProcessedPdfBlob] = useState(null); // Stores the processed PDF as a Blob
+            const [processedPdfUrl, setProcessedPdfUrl] = useState(''); // Stores the URL for the processed PDF to be displayed
+            const [currentPage, setCurrentPage] = useState(1); // Tracks the currently viewed page
+            const [numPages, setNumPages] = useState(0); // Total number of pages in the displayed PDF
+
+            const [pagesToExclude, setPagesToExclude] = useState(''); // Comma-separated page numbers/ranges to remove
+
+            const [isLoading, setIsLoading] = useState(false); // General loading state for PDF operations
+            const [errorMessage, setErrorMessage] = useState(''); // Stores any error messages to display
+
+            // Ref for the PDF viewer canvas element
+            const canvasRef = useRef(null);
+
+            // Function to handle PDF file selection from the input
+            const handleFileChange = (event) => {
+                const file = event.target.files[0];
+                if (file && file.type === "application/pdf") {
+                    // If a valid PDF is selected, update states and reset previous data
+                    setOriginalPdfFile(file);
+                    setProcessedPdfBlob(null); // Clear previous processed PDF
+                    setProcessedPdfUrl('');
+                    setCurrentPage(1); // Reset to the first page for new PDF
+                    setNumPages(0); // Reset page count
+                    setErrorMessage(''); // Clear any old error messages
+                } else {
+                    // If an invalid file type is selected, clear states and show error
+                    setOriginalPdfFile(null);
+                    setProcessedPdfBlob(null);
+                    setProcessedPdfUrl('');
+                    setNumPages(0);
+                    setErrorMessage('Please upload a valid PDF file.');
+                }
+            };
+
+            // Function to render a specific PDF page onto the canvas
+            const renderPage = async (pdfBlob, pageNumber) => {
+                // IMPORTANT: Ensure canvasRef.current is not null before proceeding
+                if (!canvasRef.current) {
+                    console.warn("Canvas element not available for rendering.");
+                    return;
+                }
+                if (!pdfBlob) { // Also ensure a PDF Blob is set
+                    return;
+                }
+
+                setIsLoading(true); // Set loading state for PDF rendering
+                setErrorMessage(''); // Clear any previous error messages
+
+                try {
+                    const arrayBuffer = await pdfBlob.arrayBuffer();
+                    const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+                    const pdf = await loadingTask.promise;
+                    setNumPages(pdf.numPages); // Update total page count based on processed PDF
+
+                    // Get the specified page to render
+                    const page = await pdf.getPage(pageNumber);
+                    // Get viewport data with a scale (e.g., 1.5 for better visual quality)
+                    const viewport = page.getViewport({ scale: 1.5 });
+                    const canvas = canvasRef.current;
+                    const context = canvas.getContext('2d');
+
+                    // Set canvas dimensions to match the viewport dimensions
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+
+                    // Configure the render context and render the page on the canvas
+                    const renderContext = {
+                        canvasContext: context,
+                        viewport: viewport,
+                    };
+                    await page.render(renderContext).promise;
+                    setIsLoading(false); // Set loading state to false after successful rendering
+                } catch (error) {
+                    // Log and display any errors that occur during PDF rendering
+                    console.error('Error rendering PDF:', error);
+                    setErrorMessage(`Error rendering PDF: ${error.message}`);
+                    setIsLoading(false);
+                }
+            };
+
+            // useEffect hook to trigger PDF page rendering
+            // This effect runs whenever processedPdfBlob (new PDF loaded), currentPage (page change),
+            // or canvasRef (canvas element becomes available) changes.
+            useEffect(() => {
+                if (processedPdfBlob && canvasRef.current) { // Ensure both are available before attempting to render
+                    renderPage(processedPdfBlob, currentPage);
+                }
+            }, [processedPdfBlob, currentPage, canvasRef]); // Dependencies for this effect
+
+            // Function to navigate to the previous page in the PDF viewer
+            const goToPreviousPage = () => {
+                if (currentPage > 1) {
+                    setCurrentPage(prev => prev - 1); // Decrement page number if not on the first page
+                }
+            };
+
+            // Function to navigate to the next page in the PDF viewer
+            const goToNextPage = () => {
+                if (currentPage < numPages) {
+                    setCurrentPage(prev => prev + 1); // Increment page number if not on the last page
+                }
+            };
+
+            // Function to process the PDF: remove specified pages
+            const processPdf = async () => {
+                if (!originalPdfFile) {
+                    setErrorMessage('Please upload a PDF first to process.');
+                    return;
+                }
+
+                setIsLoading(true); // Set processing state to true
+                setErrorMessage(''); // Clear any old error messages
+                setProcessedPdfUrl(''); // Clear the current view while processing
+
+                try {
+                    const originalPdfBytes = await originalPdfFile.arrayBuffer();
+                    const originalPdfDoc = await PDFDocument.load(originalPdfBytes);
+                    const newPdfDoc = await PDFDocument.create();
+
+                    const originalNumPages = originalPdfDoc.getPages().length;
+
+                    // Parse pages to exclude from user input, handling both single numbers and ranges
+                    const excludePageNumbers = new Set();
+                    pagesToExclude.split(',').forEach(part => {
+                        const trimmedPart = part.trim();
+                        if (trimmedPart.includes('-')) {
+                            const [startStr, endStr] = trimmedPart.split('-');
+                            const start = parseInt(startStr, 10);
+                            const end = parseInt(endStr, 10);
+                            if (!isNaN(start) && !isNaN(end) && start > 0 && end > 0 && start <= end) {
+                                for (let p = start; p <= end; p++) {
+                                    if (p <= originalNumPages) { // Only add pages within bounds
+                                        excludePageNumbers.add(p);
+                                    }
+                                }
+                            }
+                        } else {
+                            const pageNum = parseInt(trimmedPart, 10);
+                            if (!isNaN(pageNum) && pageNum > 0 && pageNum <= originalNumPages) {
+                                excludePageNumbers.add(pageNum);
+                            }
+                        }
+                    });
+
+                    let pagesCopiedCount = 0;
+                    for (let i = 0; i < originalNumPages; i++) {
+                        // PDF-lib is 0-indexed, user input is 1-indexed
+                        if (!excludePageNumbers.has(i + 1)) {
+                            // Copy the original page to the new document
+                            const [copiedPage] = await newPdfDoc.copyPages(originalPdfDoc, [i]);
+                            newPdfDoc.addPage(copiedPage);
+                            pagesCopiedCount++;
+                        }
+                    }
+
+                    const newPdfBytes = await newPdfDoc.save();
+                    const newPdfBlob = new Blob([newPdfBytes], { type: 'application/pdf' });
+                    
+                    setProcessedPdfBlob(newPdfBlob); // Store the Blob
+                    setProcessedPdfUrl(URL.createObjectURL(newPdfBlob)); // Update URL for viewer
+                    setCurrentPage(1); // Reset viewer to first page of new PDF
+
+                    if (pagesCopiedCount === 0 && originalNumPages > 0) {
+                        setErrorMessage('Warning: All pages were excluded. The output PDF might be empty.');
+                    } else if (pagesCopiedCount < originalNumPages) {
+                        setErrorMessage(`PDF processed successfully: ${pagesCopiedCount} page(s) remaining.`);
+                    } else {
+                        setErrorMessage('PDF processed successfully: No pages removed.');
+                    }
+
+                } catch (error) {
+                    console.error('Error processing PDF:', error);
+                    setErrorMessage(`Error processing PDF: ${error.message}. Please ensure it's a valid PDF.`);
+                } finally {
+                    setIsLoading(false); // Reset loading state
+                }
+            };
+
+            // Function to handle downloading the processed PDF
+            const handleDownloadPdf = () => {
+                if (processedPdfBlob) {
+                    const url = URL.createObjectURL(processedPdfBlob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `removed_pages_${originalPdfFile ? originalPdfFile.name : 'document.pdf'}`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    URL.revokeObjectURL(url); // Clean up the URL
+                } else {
+                    setErrorMessage('No processed PDF available for download.');
+                }
+            };
+
+            // JSX for rendering the component's user interface
+            return (
+                <div className="flex flex-col md:flex-row bg-gray-50 rounded-xl shadow-2xl max-w-4xl mx-auto my-4 p-8 gap-8">
+                    {/* PDF Processing Controls Section */}
+                    <div className="md:w-1/2 flex-grow flex flex-col p-6 bg-white rounded-lg shadow-md border border-gray-300">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-4">AI PDF Editor</h2>
+
+                        <input
+                            type="file"
+                            accept=".pdf"
+                            onChange={handleFileChange}
+                            className="mb-4 p-3 border border-gray-300 rounded-md w-full focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                        {errorMessage && (
+                            <p className="text-red-600 text-sm mb-4">{errorMessage}</p>
+                        )}
+
+                        <div className="mb-4">
+                            <label htmlFor="pagesToExclude" className="block text-sm font-medium text-gray-700 mb-1">
+                                Pages to Remove (e.g., 1,3,5 or 2-5):
+                            </label>
+                            <input
+                                type="text"
+                                id="pagesToExclude"
+                                value={pagesToExclude}
+                                onChange={(e) => setPagesToExclude(e.target.value)}
+                                className="w-full p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Enter page numbers or ranges (e.g., 1,3,5-7)"
+                            />
+                            <p className="text-xs text-gray-500 mt-1">
+                                Enter page numbers or ranges (e.g., 1,3,5-7) to remove.
+                            </p>
+                        </div>
+
+                        <button
+                            onClick={processPdf}
+                            disabled={!originalPdfFile || isLoading}
+                            className={`w-full py-3 px-6 rounded-md font-semibold transition-all duration-200 mb-4 ${
+                                !originalPdfFile || isLoading
+                                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                    : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-md'
+                            }`}
+                        >
+                            {isLoading ? (
+                                <div className="flex items-center justify-center">
+                                    <svg className="animate-spin h-5 w-5 mr-3 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Processing PDF...
+                                </div>
+                            ) : (
+                                'Process PDF (Remove Pages)'
+                            )}
+                        </button>
+
+                        {processedPdfUrl && (
+                            <button
+                                onClick={handleDownloadPdf}
+                                className="w-full py-3 px-6 rounded-md font-semibold transition-all duration-200 bg-teal-600 text-white hover:bg-teal-700 active:scale-95 shadow-md"
+                            >
+                                Download Modified PDF
+                            </button>
+                        )}
+                    </div>
+
+                    {/* PDF Viewer Section */}
+                    <div className="md:w-1/2 flex-grow flex flex-col items-center justify-center p-6 bg-white rounded-lg shadow-md border border-gray-300">
+                        <h2 class="text-2xl font-bold text-gray-800 mb-4">PDF Viewer</h2>
+                        {/* Conditional rendering for PDF viewer area */}
+                        {processedPdfUrl ? (
+                            <div className="relative w-full h-auto flex flex-col items-center">
+                                <canvas ref={canvasRef} className="border border-gray-400 rounded-lg shadow-inner w-full h-auto"></canvas>
+                                {isLoading && (
+                                    <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75 rounded-lg">
+                                        <svg className="animate-spin h-8 w-8 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        <span className="ml-2 text-gray-600">Loading PDF...</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-center items-center mt-4 space-x-4">
+                                    <button
+                                        onClick={goToPreviousPage}
+                                        disabled={currentPage <= 1 || isLoading}
+                                        className={`px-4 py-2 rounded-md transition-all duration-200 ${
+                                            currentPage <= 1 || isLoading
+                                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                                : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-md'
+                                        }`}
+                                    >
+                                        Previous Page
+                                    </button>
+                                    <span className="text-lg font-semibold text-gray-700">
+                                        Page {currentPage} of {numPages}
+                                    </span>
+                                    <button
+                                        onClick={goToNextPage}
+                                        disabled={currentPage >= numPages || isLoading}
+                                        className={`px-4 py-2 rounded-md transition-all duration-200 ${
+                                            currentPage >= numPages || isLoading
+                                                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                                : 'bg-blue-600 text-white hover:bg-blue-700 active:scale-95 shadow-md'
+                                        }`}
+                                    >
+                                        Next Page
+                                    </button>
+                                </div>
+                            </div>
+                        ) : (
+                            // Message displayed when no PDF is uploaded
+                            <div class="text-center text-gray-500 py-10 w-full">Upload and process a PDF to view it here.</div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // Render the App component into the 'root' div
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
